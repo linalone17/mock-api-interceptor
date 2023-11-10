@@ -1,52 +1,12 @@
-// interface
-
-class Config {
-    private baseArr: string[];
-
-    constructor() {
-        this.baseArr = [];
-    }
-
-    isMockBase(base: string) {
-        return this.baseArr.includes(base);
-    }
-
-    createBase() {}
-}
-
-const config = new Config();
-
-class Store {
-    constructor() {}
-
-}
-
-const store = new Store();
-
-export function mockFetch() {
-    const glob = window;
-    const origFetch = glob.fetch;
-    //@ts-ignore
-    glob.fetch = function (
-        input: RequestInfo | URL,
-        init?: RequestInit | undefined
-    ): Promise<Response> {
-        // if (input === config.mockBase) {
-        //     return 1;
-        // }
-
-        return origFetch(input, init);
-    };
-
-    return () => {};
-}
+import { StatusCodes } from "./statusCodes";
 
 class Mocker {
     private originalFetch: typeof fetch | null = null;
     private originalXMLHttpRequest: typeof XMLHttpRequest | null = null;
-    private apis: MockApi[] = [];
+    private originalWebSocket: typeof WebSocket | null = null;
+    private originalEventSource: typeof EventSource | null = null;
 
-
+    private apis: Set<MockApi> = new Set();
 
     private mockFetch() {
         const glob = window;
@@ -56,48 +16,109 @@ class Mocker {
             init?: RequestInit | undefined
         ): Promise<Response> => {
             for (let api of this.apis) {
-                
-                if (typeof input === 'string' && api.matchBase(input)) {
-
-                    break;
+                console.log(api.base);
+                if (typeof input === "string" && api.matchBase(input)) {
+                    console.log("matched MockApi", api.base);
+                    const endpoint = input.slice(api.base.length);
+                    return api.http.fetch(endpoint, init);
                 }
             }
 
-            return this.originalFetch!(input, init);
+            // DELETE
+            // return this.originalFetch!.call(glob, input, init);
+            return Promise.resolve("original fetch");
         };
         glob.fetch = mocked;
     }
 
+    private unmockFetch() {
+        const glob = window;
+        glob.fetch = this.originalFetch!;
+    }
+
     private mockXMLHttpRequest() {}
+    private unmockXMLHttpRequest() {}
 
     private mockHttp() {
         this.mockFetch();
-        this.mockHttp();
+        this.mockXMLHttpRequest();
+    }
+    private unmockHttp() {
+        this.unmockFetch();
+        this.unmockXMLHttpRequest();
     }
 
-    add(apis: MockApi[]) {}
+    // TODO: implement websocket
+    private mockWebSocket() {
+        const glob = window;
+        this.originalWebSocket = glob.WebSocket;
+        const mocked: typeof WebSocket = glob.WebSocket;
 
-    delete(apis: MockApi[]) {}
+        glob.WebSocket = mocked;
+    }
+
+    private unmockWebSocket() {
+        const glob = window;
+
+        glob.WebSocket = this.originalWebSocket!;
+    }
+
+    // TODO: implement event source
+    private mockEventSource() {
+        const glob = window;
+        this.originalEventSource = glob.EventSource;
+        const mocked: typeof EventSource = glob.EventSource;
+
+        glob.EventSource = mocked;
+    }
+
+    private unmockEventSource() {
+        const glob = window;
+
+        glob.EventSource = this.originalEventSource!;
+    }
+
+    public mockWebApis() {
+        this.mockHttp();
+        this.mockWebSocket();
+        this.mockEventSource();
+    }
+
+    public unmockWebApis() {
+        this.unmockHttp();
+        this.unmockWebSocket();
+        this.unmockEventSource();
+    }
+
+    public add(api: MockApi) {
+        this.apis.add(api);
+    }
+
+    public delete(api: MockApi) {
+        this.apis.delete(api);
+    }
 }
 
 const mocker = new Mocker();
 
-type HttpMethods = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-
-const enum StatusCodes {
-    "200Success" = 200,
+const enum HttpMethods {
+    GET = "GET",
+    POST = "POST",
+    PATCH = "PATCH",
+    PUT = "PUT",
+    DELETE = "DELETE",
 }
 
 type HttpMockCbRequest = {
     method: HttpMethods;
-    headers: { [header: string]: string };
-    body: string;
+    headers: HeadersInit;
+    body: string | null;
 };
 
 type HttpMockCbResponse = {
     send(): void;
-    body: string;
-    status: StatusCodes;
+    setBody(body: BodyInit): void;
+    setStatus(status: StatusCodes): void;
 };
 
 type HttpMockCb = (
@@ -105,31 +126,121 @@ type HttpMockCb = (
     response: HttpMockCbResponse
 ) => any;
 
-type Action = () => void;
-type HttpMockActions = {
+type HttpMockEndpoints = {
     [endpoint: string]: {
-        [method in HttpMethods]: string;
+        [method in HttpMethods]?: HttpMockCb;
     };
 };
 
 class HttpMock {
     base: string;
-    actions: {} = {};
+    endpoints: HttpMockEndpoints = {};
     constructor(base: string) {
         this.base = base;
     }
 
-    standard(endpoint: string, cb: HttpMockCb) {
+    public standard(
+        endpoint: string,
+        cb: HttpMockCb,
+        options?: { method?: HttpMethods }
+    ) {
+        const method = options?.method ?? HttpMethods.GET;
 
+        if (!this.endpoints[endpoint]) {
+            this.endpoints[endpoint] = {};
+        }
+
+        this.endpoints[endpoint][method] = cb;
     }
 
-    get(endpoint: string, cb: HttpMockCb) {
-        this.standard(endpoint, cb);
+    public get(endpoint: string, cb: HttpMockCb) {
+        this.standard(endpoint, cb, { method: HttpMethods.GET });
     }
 
-    getEndpoints() {}
+    public post(endpoint: string, cb: HttpMockCb) {
+        this.standard(endpoint, cb, { method: HttpMethods.POST });
+    }
 
-    request() {}
+    public put(endpoint: string, cb: HttpMockCb) {
+        this.standard(endpoint, cb, { method: HttpMethods.PUT });
+    }
+
+    public patch(endpoint: string, cb: HttpMockCb) {
+        this.standard(endpoint, cb, { method: HttpMethods.PATCH });
+    }
+
+    public delete(endpoint: string, cb: HttpMockCb) {
+        this.standard(endpoint, cb, { method: HttpMethods.DELETE });
+    }
+
+    public fetch(
+        input: string,
+        init?: RequestInit | undefined
+    ): Promise<Response> {
+        let method: HttpMethods;
+
+        if (init?.method) {
+            method = init.method.toUpperCase() as HttpMethods;
+        } else {
+            method = HttpMethods.GET;
+        }
+
+        console.log("endpoints", this.endpoints);
+        console.log("input", input);
+
+        let body: null | any = null;
+
+        if (init?.body) {
+            body = JSON.parse(init.body as string);
+        }
+
+        const headers = new Headers(init?.headers);
+
+        const cb = this.endpoints[input]?.[method];
+        return new Promise((resolve, reject) => {
+            if (cb == undefined) {
+                reject(
+                    new Response(null, {
+                        headers: {},
+                        status: 500,
+                        statusText: "500",
+                    })
+                );
+                return;
+            }
+
+            const requestObj: HttpMockCbRequest = {
+                method,
+                headers,
+                body,
+            };
+
+            let responseStatus = 500;
+            let responseBody: BodyInit = "";
+
+            const responseObj: HttpMockCbResponse = {
+                setBody(body: BodyInit) {
+                    responseBody = body;
+                },
+                setStatus(status: StatusCodes) {
+                    responseStatus = status;
+                },
+                send() {
+                    const response = new Response(responseBody, {});
+
+                    if (responseStatus < 400) {
+                        console.log("resolve", responseStatus);
+                        resolve(response);
+                    } else {
+                        console.log("reject", responseStatus);
+                        reject(response);
+                    }
+                },
+            };
+
+            cb(requestObj, responseObj);
+        });
+    }
 }
 
 class WebsocketMock {
@@ -147,10 +258,11 @@ class EventSourceMock {
 }
 
 export class MockApi {
+    base: string;
+
     http: HttpMock;
     ws: WebsocketMock;
     sse: EventSourceMock;
-    base: string;
 
     constructor(base: string) {
         this.base = base;
@@ -158,40 +270,44 @@ export class MockApi {
         this.ws = new WebsocketMock(base);
         this.sse = new EventSourceMock(base);
     }
-    
+
     matchBase(base: string) {
-        return this.base === base;
+        return base.startsWith(base);
     }
 }
 
-const basesCount = 1;
+function createMockBaseInit() {
+    const basesCount = 1;
 
-export function createMockBase(): string {
-    let base = "///mock" + basesCount;
-    return base;
+    return function createMockBase(): string {
+        let base = "///mock" + basesCount;
+        return base;
+    };
 }
 
-class Interceptor {
-    apis: MockApi[];
+export const createMockBase = createMockBaseInit();
 
+export class Interceptor {
     constructor(apis: MockApi[]) {
-        this.apis = apis;
+        apis.forEach((api) => {
+            this.addApi(api);
+        });
+        this.enable();
     }
 
     enable() {
-        mocker.add(this.apis);
+        mocker.mockWebApis();
     }
 
     disable() {
-        mocker.delete(this.apis);
+        mocker.unmockWebApis();
+    }
+
+    addApi(api: MockApi) {
+        mocker.add(api);
+    }
+
+    deleteApi(api: MockApi) {
+        mocker.delete(api);
     }
 }
-
-const base = createMockBase();
-const api = new MockApi(base);
-api.http.standard("/", (request, response) => {
-
-});
-
-const ic = new Interceptor([api]);
-ic.enable;
